@@ -10,38 +10,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
+      - name: Install Dependencies
+        run: |
+          mkdir -p package
+          pip install -r requirements.txt -t package/
 
-    - name: Install dependencies
-      run: |
-        mkdir package
-        pip install -r requirements.txt -t package/
+      - name: Copy Lambda Function
+        run: |
+          cp lambda_function.py package/
 
-    - name: Copy lambda function
-      run: |
-        cp lambda_function.py package/
+      - name: Create Lambda ZIP
+        run: |
+          cd package
+          zip -r ../lambda.zip .
 
-    - name: Create ZIP
-      run: |
-        cd package
-        zip -r ../lambda.zip .
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ap-south-1
+      - name: Verify AWS Access
+        run: |
+          aws sts get-caller-identity
 
-    - name: Deploy to Lambda
-      run: |
-        aws lambda update-function-code \
-          --function-name dockerhub-cleanup-function \
-      --zip-file fileb://lambda.zip
+      - name: Deploy Lambda Function
+        run: |
+          aws lambda update-function-code \
+            --function-name dockerhub-cleanup-function \
+            --zip-file fileb://lambda.zip
+
+      - name: Deployment Complete
+        run: |
+          echo "Deployment to AWS Lambda in us-east-1 completed successfully"
