@@ -23,15 +23,15 @@ BASE_URL = "https://hub.docker.com/v2"
 
 KEEP_LAST_N = 20
 
+# Retention rules
 DELETE_AFTER_DAYS = {
-    r"^pr-.*": 3,
+    r"^pr-.*": 0,
     r"^feature-.*": 7,
     r"^nightly-.*": 2,
     r"^dev-.*": 5,
 }
 
-PROTECTED_TAGS = ["latest", "prod", "stable"]
-
+PROTECTED_TAGS = {"latest", "prod", "stable"}
 PROTECTED_REGEX = [r"^v\d+\.\d+\.\d+$"]
 
 session = requests.Session()
@@ -55,12 +55,11 @@ def login():
     })
 
 # =========================
-# LIST REPOSITORIES (NEW)
+# REPOSITORIES
 # =========================
 
 def fetch_repositories():
     repos = []
-
     url = f"{BASE_URL}/repositories/{NAMESPACE}/?page_size=100"
 
     while url:
@@ -68,20 +67,17 @@ def fetch_repositories():
         resp.raise_for_status()
 
         data = resp.json()
-
         repos.extend(data["results"])
-
         url = data["next"]
 
     return [r["name"] for r in repos]
 
 # =========================
-# FETCH TAGS
+# TAGS
 # =========================
 
 def fetch_tags(repo):
     tags = []
-
     url = f"{BASE_URL}/repositories/{NAMESPACE}/{repo}/tags?page_size=100"
 
     while url:
@@ -89,9 +85,7 @@ def fetch_tags(repo):
         resp.raise_for_status()
 
         data = resp.json()
-
         tags.extend(data["results"])
-
         url = data["next"]
 
     return tags
@@ -100,9 +94,7 @@ def fetch_tags(repo):
 # RULES
 # =========================
 
-def is_protected(tag):
-    name = tag["name"]
-
+def is_protected(name: str) -> bool:
     if name in PROTECTED_TAGS:
         return True
 
@@ -113,23 +105,31 @@ def is_protected(tag):
     return False
 
 
+def matches_retention_rule(name: str):
+    for pattern, days in DELETE_AFTER_DAYS.items():
+        if re.match(pattern, name):
+            return days
+    return None
+
+
 def should_delete(tag):
     name = tag["name"]
 
     if is_protected(name):
         return False
 
+    rule_days = matches_retention_rule(name)
+    if rule_days is None:
+        return False
+
     updated = parser.parse(tag["last_updated"])
     age_days = (datetime.now(timezone.utc) - updated).days
 
-    for pattern, max_days in DELETE_AFTER_DAYS.items():
-        if re.match(pattern, name) and age_days > max_days:
-            return True
-
-    return False
+    # FIX: correct comparison logic
+    return age_days >= rule_days
 
 # =========================
-# DELETE TAG
+# DELETE
 # =========================
 
 def delete_tag(repo, tag_name):
@@ -143,10 +143,15 @@ def delete_tag(repo, tag_name):
     if resp.status_code in [202, 204]:
         return {"repo": repo, "tag": tag_name, "status": "DELETED"}
 
-    return {"repo": repo, "tag": tag_name, "status": "FAILED", "error": resp.text}
+    return {
+        "repo": repo,
+        "tag": tag_name,
+        "status": "FAILED",
+        "error": resp.text
+    }
 
 # =========================
-# NOTIFICATIONS
+# NOTIFY
 # =========================
 
 def send_slack(msg):
@@ -161,7 +166,7 @@ def publish_sns(subject, msg):
     )
 
 # =========================
-# MAIN LAMBDA
+# MAIN
 # =========================
 
 def lambda_handler(event, context):
@@ -178,31 +183,32 @@ def lambda_handler(event, context):
     }
 
     for repo in repos:
-
         tags = fetch_tags(repo)
 
         if not tags:
             continue
 
-        # sort by newest first
+        # newest first
         tags_sorted = sorted(
             tags,
             key=lambda x: parser.parse(x["last_updated"]),
             reverse=True
         )
 
-        keep_set = set([t["name"] for t in tags_sorted[:KEEP_LAST_N]])
+        # keep only global N newest
+        keep_set = {t["name"] for t in tags_sorted[:KEEP_LAST_N]}
 
         deleted = []
 
         for tag in tags_sorted:
-
             name = tag["name"]
 
-            if name in keep_set:
+            # skip protected
+            if is_protected(name):
                 continue
 
-            if is_protected(tag):
+            # skip global keep list
+            if name in keep_set:
                 continue
 
             if should_delete(tag):
